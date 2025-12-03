@@ -1,51 +1,106 @@
-## **5️⃣ data_loader.py** (Load & preprocess CSVs from repo)
-
-import os
+import streamlit as st
 import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+import joblib
 
 # -----------------------------
-# Configuration
+# Streamlit page config
 # -----------------------------
-DATA_DIR = "data"  # Make sure your CSV files are committed here
-
-# Optional pre-defined tickers file (if you want to filter specific tickers)
-TICKERS_FILE = os.path.join(DATA_DIR, "tickers.csv")
+st.set_page_config(page_title="Stock Direction Predictor", layout="wide")
+st.title("📈 Stock Direction Predictor (No CSVs Required)")
 
 # -----------------------------
-# Load & preprocess data
+# Generate sample stock data
 # -----------------------------
-def load_data(tickers=None):
+def generate_sample_data(tickers, days=365):
     """
-    Load historical price data for the selected tickers from CSV files in DATA_DIR.
-    If tickers=None, load all tickers in the dataset.
+    Generate synthetic stock data for the last `days` days for given tickers.
     """
-    if not os.path.exists(DATA_DIR):
-        raise FileNotFoundError(f"Data directory '{DATA_DIR}' not found. "
-                                "Please add CSV files to this folder.")
+    all_data = []
+    for ticker in tickers:
+        np.random.seed(hash(ticker) % 2**32)  # deterministic per ticker
+        dates = [datetime.today() - timedelta(days=i) for i in range(days)]
+        dates.sort()
+        prices = np.cumsum(np.random.randn(days) * 2 + 0.5) + 100  # random walk
+        volumes = np.random.randint(1_000_000, 5_000_000, size=days)
+        df = pd.DataFrame({
+            "date": dates,
+            "ticker": ticker,
+            "open": prices + np.random.randn(days),
+            "high": prices + np.random.rand(days)*2,
+            "low": prices - np.random.rand(days)*2,
+            "close": prices,
+            "volume": volumes
+        })
+        all_data.append(df)
+    return pd.concat(all_data).reset_index(drop=True)
 
-    # Collect all CSV files
-    all_files = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR) if f.endswith(".csv")]
-    if not all_files:
-        raise FileNotFoundError(f"No CSV files found in '{DATA_DIR}'. Please add dataset files.")
+# -----------------------------
+# Technical indicators
+# -----------------------------
+def add_technical_indicators(df):
+    """
+    Add simple moving average as a technical indicator.
+    """
+    df = df.copy()
+    df['sma_5'] = df.groupby('ticker')['close'].transform(lambda x: x.rolling(5).mean())
+    df['sma_10'] = df.groupby('ticker')['close'].transform(lambda x: x.rolling(10).mean())
+    df = df.dropna()
+    return df
 
-    df_list = []
-    for file in all_files:
-        df = pd.read_csv(file)
+# -----------------------------
+# Target variable
+# -----------------------------
+def add_target(df):
+    """
+    Create binary target: 1 if next day's close is higher, else 0.
+    """
+    df = df.copy()
+    df['target'] = df.groupby('ticker')['close'].shift(-1) > df['close']
+    df['target'] = df['target'].astype(int)
+    df = df.dropna()
+    return df
 
-        # Filter by tickers if provided
-        if tickers:
-            df = df[df["ticker"].isin(tickers)]
+# -----------------------------
+# ML model training
+# -----------------------------
+def train_model(df, features):
+    X = df[features]
+    y = df['target']
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    acc = accuracy_score(y_test, y_pred)
+    joblib.dump(model, "models/random_forest_model.pkl")
+    return model, acc
 
-        df_list.append(df)
+# -----------------------------
+# User input
+# -----------------------------
+tickers_input = st.text_input(
+    "Enter tickers (comma-separated, e.g., AAPL,MSFT,GOOGL):",
+    value="AAPL,MSFT"
+)
+tickers = [t.strip().upper() for t in tickers_input.split(",")] if tickers_input else ["AAPL", "MSFT"]
 
-    # Combine all files
-    combined_df = pd.concat(df_list, ignore_index=True)
+# -----------------------------
+# Generate & display data
+# -----------------------------
+df = generate_sample_data(tickers)
+st.write("Sample Data", df.head())
 
-    # Preprocess dates
-    combined_df['date'] = pd.to_datetime(combined_df['date'], errors='coerce')
-    combined_df = combined_df.dropna(subset=['date'])
+# Feature engineering
+df = add_technical_indicators(df)
+df = add_target(df)
+features = ['open','high','low','close','volume','sma_5','sma_10']
 
-    # Sort by ticker & date
-    combined_df = combined_df.sort_values(["ticker", "date"]).reset_index(drop=True)
-
-    return combined_df
+# Train model
+if st.button("Train RandomForest Model"):
+    with st.spinner("Training model..."):
+        model, acc = train_model(df, features)
+    st.success(f"Model trained! Accuracy on test set: {acc:.2%}")
