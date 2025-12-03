@@ -5,6 +5,6 @@ scikit-learn
 xgboost
 lightgbm
 ta
-joblib=
+joblib
 kagglehub
 matplotlib
